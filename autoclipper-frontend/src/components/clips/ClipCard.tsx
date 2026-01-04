@@ -9,6 +9,16 @@ interface ClipCardProps {
     onEditCaption?: () => void;
 }
 
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
+
+function getFullUrl(path?: string) {
+    if (!path) return undefined;
+    if (path.startsWith("http")) return path;
+    const base = API_BASE.replace(/\/+$/, ""); // remove trailing slash
+    const cleanPath = path.replace(/^\/+/, ""); // remove leading slash
+    return `${base}/${cleanPath}`;
+}
+
 export function ClipCard({
     clip,
     selected,
@@ -17,17 +27,35 @@ export function ClipCard({
     onEditCaption,
 }: ClipCardProps) {
     const duration = Math.max(0, clip.end_sec - clip.start_sec).toFixed(0);
+    const thumbUrl = getFullUrl(clip.thumb_url) || PLACEHOLDER_THUMBNAIL;
+    const fileUrl = getFullUrl(clip.file_url);
 
     return (
         <div className="rounded-xl border overflow-hidden">
             {/* Thumbnail */}
-            <div className="aspect-[9/16] bg-muted">
+            <div className="aspect-[9/16] bg-muted relative group">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
-                    src={clip.thumb_url || PLACEHOLDER_THUMBNAIL}
+                    src={thumbUrl}
                     alt={`Clip thumbnail`}
                     className="h-full w-full object-cover"
                 />
+
+                {/* Play Button Overlay (Optional - could integrate actual video player here) */}
+                {fileUrl && (
+                    <a
+                        href={fileUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 bg-black/30 transition-opacity"
+                    >
+                        <div className="bg-white/90 rounded-full p-3 shadow-lg">
+                            <svg className="w-6 h-6 text-black" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M8 5v14l11-7z" />
+                            </svg>
+                        </div>
+                    </a>
+                )}
             </div>
 
             {/* Content */}
@@ -57,22 +85,22 @@ export function ClipCard({
                 {/* Actions */}
                 <div className="flex gap-2">
                     <a
-                        className={`rounded-md border px-3 py-2 text-sm ${clip.file_url
-                                ? "hover:bg-muted"
-                                : "pointer-events-none opacity-50"
+                        className={`rounded-md border px-3 py-2 text-sm flex-1 text-center ${fileUrl
+                            ? "hover:bg-muted"
+                            : "pointer-events-none opacity-50"
                             }`}
-                        href={clip.file_url || "#"}
+                        href={fileUrl || "#"}
                         target="_blank"
                         rel="noreferrer"
                     >
-                        Preview
+                        Preview Video
                     </a>
                     {onEditCaption && (
                         <button
                             className="rounded-md border px-3 py-2 text-sm hover:bg-muted"
                             onClick={onEditCaption}
                         >
-                            Edit Caption
+                            Edit
                         </button>
                     )}
                 </div>

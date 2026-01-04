@@ -77,6 +77,7 @@ def generate_candidates_job(
     Queue: io
     """
     logger.info(f"[generate_candidates] Starting for video: {video_id} (min={min_dur}, max={max_dur}, limit={max_items})")
+    logger.info(f"[generate_candidates] Chapters payload: {type(chapters)} len={len(chapters) if chapters else 0}")
     
     audio_path = None
     
@@ -311,7 +312,8 @@ def transcribe_pass2_job(
                 
                 # Extract word timing if available
                 for word in seg.get("words", []):
-                    if word["start"] >= clip["start_sec"] and word["end"] <= clip["end_sec"]:
+                    # Check for OVERLAP, not strict inclusion
+                    if word["end"] > clip["start_sec"] and word["start"] < clip["end_sec"]:
                         word_timing.append({
                             "word": word["word"],
                             "start": word["start"] - clip["start_sec"],
@@ -376,3 +378,162 @@ def llm_refine_job(clips: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     
     logger.info(f"[llm_refine] Refined {len(clips)} clips")
     return clips
+
+
+# =============================================================================
+# Job 7: Render Clips
+# =============================================================================
+
+def render_clips_job(
+    video_id: str,
+    youtube_video_id: str,
+    clips: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    Render actual MP4 files from clips.
+    Downloads full video once, then cuts each clip with FFmpeg.
+    
+    Queue: render
+    """
+    import os
+    import subprocess
+    import glob
+    from app.services.editor import Editor
+    
+    logger.info(f"[render_clips] Starting for {len(clips)} clips")
+    
+    editor = Editor(output_dir="static/clips")
+    url = f"https://www.youtube.com/watch?v={youtube_video_id}"
+    
+    # Download full video once (more reliable than section download)
+    temp_dir = "/tmp/render_temp"
+    os.makedirs(temp_dir, exist_ok=True)
+    temp_video_template = f"{temp_dir}/{youtube_video_id}.%(ext)s"
+    
+    # Check if already downloaded
+    existing = glob.glob(f"{temp_dir}/{youtube_video_id}.*")
+    if existing:
+        temp_video = existing[0]
+        logger.info(f"[render_clips] Using cached video: {temp_video}")
+    else:
+        logger.info(f"[render_clips] Downloading full video...")
+        cmd = [
+            "yt-dlp",
+            "-f", "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best",
+            "--merge-output-format", "mp4",
+            "-o", temp_video_template,
+            "--no-playlist",
+            url
+        ]
+        
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=900  # 15 min timeout for large videos
+        )
+        
+        # Find the downloaded file
+        downloaded = glob.glob(f"{temp_dir}/{youtube_video_id}.*")
+        if not downloaded:
+            logger.error(f"[render_clips] Failed to download video: {result.stderr}")
+            return []
+        temp_video = downloaded[0]
+        logger.info(f"[render_clips] Downloaded: {temp_video}")
+    
+    rendered_clips = []
+    
+    def _generate_srt(word_timing: List[Dict], start_sec: float) -> str:
+        """Generate SRT content from word timings - Strict 1 Word Per Line (Karaoke)."""
+        if not word_timing:
+            return None
+            
+        srt_content = ""
+        words = sorted(word_timing, key=lambda x: x["start"])
+        
+        # Helper for time format
+        def fmt_time(t):
+            import datetime
+            # Ensure time is non-negative
+            t = max(0, t)
+            delta = datetime.timedelta(seconds=t)
+            s = str(delta)
+            if "." in s:
+                base, decimal = s.split(".")
+                decimal = decimal[:3]
+            else:
+                base = s
+                decimal = "000"
+            parts = base.split(":")
+            if len(parts) == 2:
+                base = f"0:{base}"
+            return f"{base},{decimal}".replace("0:", "00:")
+
+        entry_idx = 1
+        for i, w in enumerate(words):
+            start_ts = fmt_time(w["start"])
+            end_ts = fmt_time(w["end"])
+            
+            # Clean text (remove punctuation for clean look if desired, or keep)
+            # Keeping punctuation for readability
+            text = w["word"].strip() 
+            
+            # SRT Entry
+            # 1 word per line
+            srt_content += f"{entry_idx}\n{start_ts} --> {end_ts}\n{text}\n\n"
+            entry_idx += 1
+                    
+        return srt_content
+
+    for i, clip in enumerate(clips):
+        clip_id = clip.get("id", str(uuid4()))
+        start = clip["start_sec"]
+        end = clip["end_sec"]
+        
+        logger.info(f"[render_clips] Rendering clip {i+1}/{len(clips)}: {start}s - {end}s")
+        
+        srt_path = None
+        try:
+            # Generate SRT if word timing exists
+            word_timing = clip.get("word_timing")
+            if word_timing:
+                srt_content = _generate_srt(word_timing, 0) # timing is relative to clip start
+                if srt_content:
+                    srt_path = f"/tmp/{clip_id}.srt"
+                    with open(srt_path, "w") as f:
+                        f.write(srt_content)
+            
+            # Cut and process with FFmpeg
+            output_path = editor.cut_video(
+                input_path=temp_video,
+                start=start,
+                end=end,
+                srt_path=srt_path
+            )
+            
+            # Generate thumbnail
+            thumb_path = editor.generate_thumbnail(output_path)
+            
+            # Update clip data
+            clip["file_url"] = output_path
+            clip["thumb_url"] = thumb_path
+            rendered_clips.append(clip)
+            
+            logger.info(f"[render_clips] Rendered clip {clip_id}: {output_path}")
+            
+        except Exception as e:
+            logger.error(f"[render_clips] Failed to render clip {clip_id}: {e}")
+            continue
+        finally:
+            # Clean up SRT
+            if srt_path and os.path.exists(srt_path):
+                os.remove(srt_path)
+    
+    # Clean up temp video to save space
+    if os.path.exists(temp_video):
+        logger.info(f"[render_clips] Cleaning up source video: {temp_video}")
+        os.remove(temp_video)
+    
+    logger.info(f"[render_clips] Completed: {len(rendered_clips)}/{len(clips)} clips rendered")
+    return rendered_clips
+

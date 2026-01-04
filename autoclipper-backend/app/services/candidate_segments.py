@@ -239,5 +239,49 @@ def generate_candidates(
     else:
         if not audio_path:
             raise ValueError("audio_path required when no chapters available")
-        logger.info(f"Using SILENCE strategy (min={min_dur}, max={max_dur}, limit={max_items})")
-        return candidates_from_silence(audio_path, duration_sec, min_dur=min_dur, max_dur=max_dur, max_items=max_items)
+    
+    # Try silence detection
+    results = candidates_from_silence(audio_path, duration_sec, min_dur=min_dur, max_dur=max_dur, max_items=max_items)
+    
+    if results:
+        return results
+        
+    # Fallback to fixed intervals if silence detection yielded nothing
+    logger.warning("SILENCE strategy returned 0 candidates. Falling back to FIXED_INTERVAL strategy.")
+    return candidates_from_fixed_intervals(duration_sec, min_dur=min_dur, max_dur=max_dur, max_items=max_items)
+
+
+def candidates_from_fixed_intervals(
+    duration_sec: float,
+    min_dur: Optional[float] = None,
+    max_dur: Optional[float] = None,
+    max_items: Optional[int] = None,
+) -> List[Candidate]:
+    """
+    Fallback strategy: Generate clips at fixed intervals.
+    Used when chapters are missing AND silence detection fails.
+    """
+    min_len = min_dur or settings.cand_min_sec
+    max_len = max_dur or settings.cand_max_sec
+    shift = settings.cand_shift_sec
+    limit = max_items or settings.cand_max_per_video
+    
+    out: List[Candidate] = []
+    
+    t = 0.0
+    while t + min_len < duration_sec:
+        start = t
+        end = min(t + max_len, duration_sec)
+        
+        if end - start >= min_len:
+            out.append(Candidate(
+                start_sec=start,
+                end_sec=end,
+                strategy="FIXED_INTERVAL",
+                source_info=f"interval_{int(t)}s"
+            ))
+        
+        t += shift
+        
+    logger.info(f"Using FIXED_INTERVAL strategy: generated {len(out)} candidates")
+    return out[:limit]

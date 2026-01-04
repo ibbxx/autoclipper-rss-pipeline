@@ -150,6 +150,9 @@ def orchestrated_generate_candidates(
             max_items=max_items
         )
         
+        if not candidates:
+            raise ValueError("No candidates generated. Probe/Silence detection found 0 clips.")
+        
         # Persist candidates
         save_candidates_to_db(video_id, candidates)
         
@@ -287,7 +290,7 @@ def orchestrated_transcribe_pass2(
         update_video_status(video_id, VideoStatus.LLM_REFINING)
         
         # Enqueue next step
-        enqueue_ai(orchestrated_llm_refine, video_id, transcribed)
+        enqueue_ai(orchestrated_llm_refine, video_id, youtube_video_id, transcribed)
         
     except Exception as e:
         logger.error(f"[orchestrator] transcribe_pass2 failed: {e}")
@@ -295,15 +298,22 @@ def orchestrated_transcribe_pass2(
         raise
 
 
-def orchestrated_llm_refine(video_id: str, clips: list):
-    """Step 6: LLM refine, then mark READY for preview."""
+def orchestrated_llm_refine(video_id: str, youtube_video_id: str, clips: list):
+    """Step 6: LLM refine, then render clips and mark READY."""
     try:
         refined = llm_refine_job(clips)
         
-        # Update clips with refined data
+        # Import render job
+        from app.workers.pipeline_v2 import render_clips_job
+        
+        # Render the clips
+        logger.info(f"[orchestrator] Starting render for {len(refined)} clips")
+        rendered = render_clips_job(video_id, youtube_video_id, refined)
+        
+        # Update clips with refined data AND file URLs
         db = SessionLocal()
         try:
-            for clip_data in refined:
+            for clip_data in rendered:
                 clip = db.query(Clip).filter(
                     Clip.video_id == video_id,
                     Clip.start_sec >= clip_data["start_sec"] - 2,
@@ -315,6 +325,8 @@ def orchestrated_llm_refine(video_id: str, clips: list):
                     clip.suggested_caption = clip_data.get("caption")
                     clip.risk_flags = clip_data.get("risk_flags")
                     clip.keywords = clip_data.get("keywords")
+                    clip.file_url = clip_data.get("file_url")
+                    clip.thumb_url = clip_data.get("thumb_url")
                     clip.render_status = "READY"
             db.commit()
         finally:
@@ -329,3 +341,4 @@ def orchestrated_llm_refine(video_id: str, clips: list):
         logger.error(f"[orchestrator] llm_refine failed: {e}")
         update_video_status(video_id, VideoStatus.ERROR, str(e))
         raise
+

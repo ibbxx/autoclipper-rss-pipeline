@@ -36,7 +36,7 @@ class Editor:
             
             if srt_path and os.path.exists(srt_path):
                 # Middle Center, Small font (Requested style)
-                style = "Alignment=10,Fontname=Arial,FontSize=10,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=1,Shadow=0,MarginV=10"
+                style = "Alignment=10,Fontname=Arial,FontSize=10,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=0,Shadow=0,MarginV=10"
                 video = video.filter('subtitles', srt_path, force_style=style)
 
             # 5. Output with both video and audio (ultrafast preset for speed)
