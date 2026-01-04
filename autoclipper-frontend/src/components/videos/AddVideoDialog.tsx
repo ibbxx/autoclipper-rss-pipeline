@@ -14,13 +14,21 @@ interface AddVideoDialogProps {
 export function AddVideoDialog({ open, onClose }: AddVideoDialogProps) {
     const queryClient = useQueryClient();
     const [videoUrl, setVideoUrl] = useState("");
+    const [minClip, setMinClip] = useState(75);
+    const [maxClip, setMaxClip] = useState(180);
+    const [maxClips, setMaxClips] = useState(4);
     const [result, setResult] = useState<{ type: "success" | "exists" | "error"; message: string } | null>(null);
 
     const createMutation = useMutation({
-        mutationFn: (video_url: string) =>
+        mutationFn: (data: { video_url: string; min_clip: number; max_clip: number; max_clips_per_video: number }) =>
             apiFetch<Video>(endpoints.videos, {
                 method: "POST",
-                json: { video_url },
+                json: {
+                    video_url: data.video_url,
+                    min_clip_sec: data.min_clip,
+                    max_clip_sec: data.max_clip,
+                    max_clips_per_video: data.max_clips_per_video
+                },
             }),
         onSuccess: (data) => {
             queryClient.invalidateQueries({ queryKey: ["videos"] });
@@ -41,7 +49,12 @@ export function AddVideoDialog({ open, onClose }: AddVideoDialogProps) {
         e.preventDefault();
         setResult(null);
         if (videoUrl.trim()) {
-            createMutation.mutate(videoUrl.trim());
+            createMutation.mutate({
+                video_url: videoUrl.trim(),
+                min_clip: minClip,
+                max_clip: maxClip,
+                max_clips_per_video: maxClips
+            });
         }
     };
 
@@ -81,13 +94,67 @@ export function AddVideoDialog({ open, onClose }: AddVideoDialogProps) {
                         </p>
                     </div>
 
+                    {/* Clip Duration Config */}
+                    <div className="grid grid-cols-2 gap-4 pt-2 border-t">
+                        <div>
+                            <label className="block text-sm font-medium mb-1">
+                                Min Duration (sec) <span className="text-red-500">*</span>
+                            </label>
+                            <input
+                                type="number"
+                                min={5}
+                                max={120}
+                                required
+                                className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                                value={minClip}
+                                onChange={(e) => setMinClip(parseInt(e.target.value) || 0)}
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium mb-1">
+                                Max Duration (sec) <span className="text-red-500">*</span>
+                            </label>
+                            <input
+                                type="number"
+                                min={6}
+                                max={180}
+                                required
+                                className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                                value={maxClip}
+                                onChange={(e) => setMaxClip(parseInt(e.target.value) || 0)}
+                            />
+                        </div>
+
+                        <div className="col-span-2">
+                            <label className="block text-sm font-medium mb-1">
+                                Clips per Video <span className="text-red-500">*</span>
+                            </label>
+                            <input
+                                type="number"
+                                min={1}
+                                max={10}
+                                required
+                                className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                                value={maxClips}
+                                onChange={(e) => setMaxClips(parseInt(e.target.value) || 0)}
+                            />
+                            <p className="text-xs text-muted-foreground mt-1">
+                                Jumlah maksimal klip yang akan dibuat (1-10)
+                            </p>
+                        </div>
+
+                        <p className="col-span-2 text-xs text-muted-foreground">
+                            Durasi klip yang diinginkan (default edukasi: 75s - 180s)
+                        </p>
+                    </div>
+
                     {result && (
                         <div
                             className={`text-sm p-3 rounded-md ${result.type === "success"
-                                    ? "bg-green-50 text-green-700 border border-green-200"
-                                    : result.type === "exists"
-                                        ? "bg-amber-50 text-amber-700 border border-amber-200"
-                                        : "bg-red-50 text-red-700 border border-red-200"
+                                ? "bg-green-50 text-green-700 border border-green-200"
+                                : result.type === "exists"
+                                    ? "bg-amber-50 text-amber-700 border border-amber-200"
+                                    : "bg-red-50 text-red-700 border border-red-200"
                                 }`}
                         >
                             {result.message}
@@ -105,7 +172,7 @@ export function AddVideoDialog({ open, onClose }: AddVideoDialogProps) {
                         {!result?.type || result.type !== "success" ? (
                             <button
                                 type="submit"
-                                disabled={createMutation.isPending}
+                                disabled={createMutation.isPending || minClip < 5 || maxClip <= minClip || maxClips < 1}
                                 className="rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                             >
                                 {createMutation.isPending ? "Memproses..." : "Proses Sekarang"}

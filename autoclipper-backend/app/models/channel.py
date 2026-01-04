@@ -12,8 +12,8 @@ class Channel(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     clips_per_video: Mapped[int] = mapped_column(Integer, default=4)
-    min_clip_sec: Mapped[int] = mapped_column(Integer, default=20)
-    max_clip_sec: Mapped[int] = mapped_column(Integer, default=45)
+    min_clip_sec: Mapped[int] = mapped_column(Integer, default=75)
+    max_clip_sec: Mapped[int] = mapped_column(Integer, default=180)
 
     # Forward-only baseline tracking
     baseline_set: Mapped[bool] = mapped_column(Boolean, default=False)

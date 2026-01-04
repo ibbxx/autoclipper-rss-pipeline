@@ -24,6 +24,11 @@ class Video(Base):
     chapters_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     strategy: Mapped[str | None] = mapped_column(String(20), nullable=True)  # CHAPTER or SILENCE
+    
+    # Clip Duration Override (optional, for Manual videos)
+    min_clip_duration: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_clip_duration: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_clips_per_video: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

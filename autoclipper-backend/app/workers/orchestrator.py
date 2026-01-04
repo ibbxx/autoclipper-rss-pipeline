@@ -126,7 +126,29 @@ def orchestrated_generate_candidates(
 ):
     """Step 2: Generate candidates, then enqueue Step 3."""
     try:
-        candidates = generate_candidates_job(video_id, youtube_video_id, duration_sec, chapters)
+        # Fetch video to check for duration constraints
+        db = SessionLocal()
+        min_dur = None
+        max_dur = None
+        max_items = None
+        try:
+            video = db.query(Video).filter(Video.id == video_id).first()
+            if video:
+                min_dur = video.min_clip_duration
+                max_dur = video.max_clip_duration
+                max_items = video.max_clips_per_video
+        finally:
+            db.close()
+
+        candidates = generate_candidates_job(
+            video_id, 
+            youtube_video_id, 
+            duration_sec, 
+            chapters,
+            min_dur=min_dur,
+            max_dur=max_dur,
+            max_items=max_items
+        )
         
         # Persist candidates
         save_candidates_to_db(video_id, candidates)

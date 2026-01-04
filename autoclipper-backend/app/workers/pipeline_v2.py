@@ -66,6 +66,9 @@ def generate_candidates_job(
     youtube_video_id: str,
     duration_sec: float,
     chapters: Optional[List[dict]] = None,
+    min_dur: Optional[float] = None,
+    max_dur: Optional[float] = None,
+    max_items: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """
     Generate clip candidates from chapters or silence detection.
@@ -73,7 +76,7 @@ def generate_candidates_job(
     Next job: transcribe_pass1_job
     Queue: io
     """
-    logger.info(f"[generate_candidates] Starting for video: {video_id}")
+    logger.info(f"[generate_candidates] Starting for video: {video_id} (min={min_dur}, max={max_dur}, limit={max_items})")
     
     audio_path = None
     
@@ -86,7 +89,10 @@ def generate_candidates_job(
     candidates = generate_candidates(
         duration_sec=duration_sec,
         chapters=chapters,
-        audio_path=audio_path
+        audio_path=audio_path,
+        min_dur=min_dur,
+        max_dur=max_dur,
+        max_items=max_items,
     )
     
     result = [

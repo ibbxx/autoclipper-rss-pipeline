@@ -28,6 +28,9 @@ def _clamp(x: float, lo: float, hi: float) -> float:
 def candidates_from_chapters(
     duration_sec: float,
     chapters: List[dict],
+    min_dur: Optional[float] = None,
+    max_dur: Optional[float] = None,
+    max_items: Optional[int] = None,
 ) -> List[Candidate]:
     """
     Create candidate windows from video chapters.
@@ -36,13 +39,15 @@ def candidates_from_chapters(
     Args:
         duration_sec: Total video duration
         chapters: List of {title, start_time, end_time}
+        max_items: Max number of candidates to return
         
     Returns:
         List of Candidate segments
     """
-    min_len = settings.cand_min_sec
-    max_len = settings.cand_max_sec
+    min_len = min_dur or settings.cand_min_sec
+    max_len = max_dur or settings.cand_max_sec
     shift = settings.cand_shift_sec
+    limit = max_items or settings.cand_max_per_video
 
     out: List[Candidate] = []
     
@@ -81,7 +86,7 @@ def candidates_from_chapters(
                 ))
 
     # Limit total candidates
-    return out[:settings.cand_max_per_video]
+    return out[:limit]
 
 
 def _parse_silencedetect(stderr_text: str) -> List[Tuple[float, float]]:
@@ -116,6 +121,9 @@ def candidates_from_silence(
     duration_sec: float,
     silence_db: int = -35,
     min_silence_sec: float = 0.35,
+    min_dur: Optional[float] = None,
+    max_dur: Optional[float] = None,
+    max_items: Optional[int] = None,
 ) -> List[Candidate]:
     """
     Use ffmpeg silencedetect to find speech blocks, then create candidate windows.
@@ -126,11 +134,13 @@ def candidates_from_silence(
         duration_sec: Total duration
         silence_db: Silence threshold in dB (default -35)
         min_silence_sec: Minimum silence duration to detect
+        max_items: Max number of candidates to return
         
     Returns:
         List of Candidate segments
     """
     logger.info(f"Running silence detection on: {audio_path}")
+    limit = max_items or settings.cand_max_per_video
     
     cmd = [
         "ffmpeg",
@@ -170,8 +180,8 @@ def candidates_from_silence(
     logger.info(f"Found {len(speech_blocks)} speech blocks")
 
     # Generate candidate windows from speech blocks
-    min_len = settings.cand_min_sec
-    max_len = settings.cand_max_sec
+    min_len = min_dur or settings.cand_min_sec
+    max_len = max_dur or settings.cand_max_sec
     shift = settings.cand_shift_sec
 
     out: List[Candidate] = []
@@ -198,14 +208,17 @@ def candidates_from_silence(
                     source_info=f"speech_{int(b0)}s"
                 ))
             t += shift
-
-    return out[:settings.cand_max_per_video]
+            
+    return out[:limit]
 
 
 def generate_candidates(
     duration_sec: float,
     chapters: Optional[List[dict]] = None,
     audio_path: Optional[str] = None,
+    min_dur: Optional[float] = None,
+    max_dur: Optional[float] = None,
+    max_items: Optional[int] = None,
 ) -> List[Candidate]:
     """
     Main entry point: generate candidates using chapters if available,
@@ -215,15 +228,16 @@ def generate_candidates(
         duration_sec: Video duration
         chapters: Optional list of chapters
         audio_path: Required if no chapters (for silence detection)
+        max_items: Max candidates to return
         
     Returns:
         List of Candidate segments
     """
     if chapters and len(chapters) > 0:
-        logger.info("Using CHAPTER strategy")
-        return candidates_from_chapters(duration_sec, chapters)
+        logger.info(f"Using CHAPTER strategy (min={min_dur}, max={max_dur}, limit={max_items})")
+        return candidates_from_chapters(duration_sec, chapters, min_dur, max_dur, max_items)
     else:
         if not audio_path:
             raise ValueError("audio_path required when no chapters available")
-        logger.info("Using SILENCE strategy")
-        return candidates_from_silence(audio_path, duration_sec)
+        logger.info(f"Using SILENCE strategy (min={min_dur}, max={max_dur}, limit={max_items})")
+        return candidates_from_silence(audio_path, duration_sec, min_dur=min_dur, max_dur=max_dur, max_items=max_items)

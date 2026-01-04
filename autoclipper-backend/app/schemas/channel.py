@@ -11,6 +11,9 @@ class ChannelBase(BaseModel):
 
 class ChannelCreate(ChannelBase):
     process_latest: bool = False  # Proses 1 video terbaru saat add channel
+    clips_per_video: int = 4
+    min_clip_sec: int = 75  # Default baru untuk edukasi
+    max_clip_sec: int = 180
 
 class ChannelUpdate(BaseModel):
     name: str | None = None

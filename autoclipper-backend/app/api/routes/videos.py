@@ -20,6 +20,9 @@ router = APIRouter(prefix="/api", tags=["videos"])
 class VideoCreate(BaseModel):
     """Request body for manual video add"""
     video_url: str
+    min_clip_sec: int | None = None
+    max_clip_sec: int | None = None
+    max_clips_per_video: int | None = 4  # Default manual
 
 
 def extract_youtube_video_id(url: str) -> str | None:
@@ -98,13 +101,19 @@ def create_video(body: VideoCreate, db: Session = Depends(get_db)):
         status="NEW",
         progress=0,
         source="MANUAL",
+        # Store clip duration constraints if provided
+        min_clip_duration=body.min_clip_sec,
+        max_clip_duration=body.max_clip_sec,
+        max_clips_per_video=body.max_clips_per_video,
     )
     db.add(v)
     db.commit()
     db.refresh(v)
     
     # Enqueue processing
-    queue.enqueue(process_video_job, v.id, job_timeout=3600)
+    # Start Pipeline V2
+    from app.workers.orchestrator import start_pipeline_v2
+    start_pipeline_v2(v.id, v.youtube_video_id)
     
     return v
 

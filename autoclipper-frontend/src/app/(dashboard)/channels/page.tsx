@@ -96,13 +96,17 @@ export default function ChannelsPage() {
               >
                 Edit
               </button>
-              <button
-                onClick={() => setBackfillChannel(c)}
-                className="rounded px-2 py-1 text-xs border hover:bg-muted"
-                title="Backfill Video Lama"
-              >
-                Backfill
-              </button>
+
+              {c.youtube_channel_id !== "__MANUAL__" && (
+                <button
+                  onClick={() => setBackfillChannel(c)}
+                  className="rounded px-2 py-1 text-xs border hover:bg-muted"
+                  title="Backfill Video Lama"
+                >
+                  Backfill
+                </button>
+              )}
+
               <button
                 onClick={() => handleDelete(c)}
                 disabled={deleteMutation.isPending}

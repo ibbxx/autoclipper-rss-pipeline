@@ -53,8 +53,8 @@ export function AddChannelDialog({ open, onClose }: AddChannelDialogProps) {
         is_active: true,
         process_latest: false,
         clips_per_video: 4,
-        min_clip_sec: 30,
-        max_clip_sec: 75,
+        min_clip_sec: 75,
+        max_clip_sec: 180,
     });
     const [resolveError, setResolveError] = useState<string | null>(null);
 
@@ -102,8 +102,8 @@ export function AddChannelDialog({ open, onClose }: AddChannelDialogProps) {
             is_active: true,
             process_latest: false,
             clips_per_video: 4,
-            min_clip_sec: 30,
-            max_clip_sec: 75,
+            min_clip_sec: 75,
+            max_clip_sec: 180,
         });
         setResolveError(null);
     };

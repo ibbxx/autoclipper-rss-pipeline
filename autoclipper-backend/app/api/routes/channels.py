@@ -91,7 +91,9 @@ def create_channel(body: ChannelCreate, db: Session = Depends(get_db)):
             db.commit()
             
             # Enqueue processing
-            queue.enqueue(process_video_job, v.id, job_timeout=3600)
+            # Enqueue processing
+            from app.workers.orchestrator import start_pipeline_v2
+            start_pipeline_v2(v.id, baseline_video_id)
     
     return ch
 
@@ -235,7 +237,9 @@ def backfill_channel(
         db.commit()
         
         # Enqueue processing
-        queue.enqueue(process_video_job, v.id, job_timeout=3600)
+        # Enqueue processing
+        from app.workers.orchestrator import start_pipeline_v2
+        start_pipeline_v2(v.id, v.youtube_video_id)
         processed += 1
     
     return {
