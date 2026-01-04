@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+.next/
+.DS_Store
+
+# Environment
+.env
+.env.local
+*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Build
+dist/
+build/
+*.egg-info/
+
+# Temp
+temp_downloads/
+static/clips/
+
+# Docker volumes
+pgdata/
+
+# Logs
+*.log
+npm-debug.log*
