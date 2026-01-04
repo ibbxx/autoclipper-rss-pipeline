@@ -50,9 +50,11 @@ export function AddChannelDialog({ open, onClose }: AddChannelDialogProps) {
     const [formData, setFormData] = useState({
         name: "",
         youtube_channel_id: "",
+        is_active: true,
+        process_latest: false,
         clips_per_video: 4,
-        min_clip_sec: 20,
-        max_clip_sec: 45,
+        min_clip_sec: 30,
+        max_clip_sec: 75,
     });
     const [resolveError, setResolveError] = useState<string | null>(null);
 
@@ -97,9 +99,11 @@ export function AddChannelDialog({ open, onClose }: AddChannelDialogProps) {
         setFormData({
             name: "",
             youtube_channel_id: "",
+            is_active: true,
+            process_latest: false,
             clips_per_video: 4,
-            min_clip_sec: 20,
-            max_clip_sec: 45,
+            min_clip_sec: 30,
+            max_clip_sec: 75,
         });
         setResolveError(null);
     };
@@ -225,6 +229,39 @@ export function AddChannelDialog({ open, onClose }: AddChannelDialogProps) {
                         <p className="text-xs text-muted-foreground mt-1">
                             Contoh: youtube.com/@ytberfavkamu, youtube.com/watch?v=xxx
                         </p>
+                    </div>
+
+                    {/* Monitoring Options */}
+                    <div className="space-y-2 py-2 border-t border-b">
+                        <div className="flex items-center gap-2">
+                            <input
+                                type="checkbox"
+                                id="is_active"
+                                checked={formData.is_active}
+                                onChange={(e) =>
+                                    setFormData((prev) => ({ ...prev, is_active: e.target.checked }))
+                                }
+                                className="h-4 w-4"
+                            />
+                            <label htmlFor="is_active" className="text-sm">
+                                Aktifkan Monitoring (otomatis proses video baru)
+                            </label>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                            <input
+                                type="checkbox"
+                                id="process_latest"
+                                checked={formData.process_latest}
+                                onChange={(e) =>
+                                    setFormData((prev) => ({ ...prev, process_latest: e.target.checked }))
+                                }
+                                className="h-4 w-4"
+                            />
+                            <label htmlFor="process_latest" className="text-sm">
+                                Proses 1 video terbaru sekarang
+                            </label>
+                        </div>
                     </div>
 
                     {/* Clips per Video */}

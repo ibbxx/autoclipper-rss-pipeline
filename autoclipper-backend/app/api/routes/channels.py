@@ -71,9 +71,9 @@ def create_channel(body: ChannelCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(ch)
     
-    # === PROCESS 1 LATEST VIDEO ===
-    # Saat Add Channel, langsung proses 1 video terbaru
-    if latest_entry and baseline_video_id:
+    # === PROCESS 1 LATEST VIDEO (OPTIONAL) ===
+    # Hanya proses jika user centang checkbox "Proses 1 video terbaru"
+    if body.process_latest and latest_entry and baseline_video_id:
         # Check if video already exists (idempotency)
         video_exists = db.query(Video).filter(Video.youtube_video_id == baseline_video_id).first()
         

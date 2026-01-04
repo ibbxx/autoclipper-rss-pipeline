@@ -5,6 +5,8 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useChannels } from "@/hooks/useChannels";
 import { AddChannelDialog } from "@/components/channels/AddChannelDialog";
 import { EditChannelDialog } from "@/components/channels/EditChannelDialog";
+import { BackfillDialog } from "@/components/channels/BackfillDialog";
+import { AddVideoDialog } from "@/components/videos/AddVideoDialog";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { apiFetch } from "@/lib/api";
@@ -15,7 +17,9 @@ export default function ChannelsPage() {
   const queryClient = useQueryClient();
   const { data, isLoading, error } = useChannels();
   const [showAddDialog, setShowAddDialog] = useState(false);
+  const [showAddVideoDialog, setShowAddVideoDialog] = useState(false);
   const [editingChannel, setEditingChannel] = useState<Channel | null>(null);
+  const [backfillChannel, setBackfillChannel] = useState<Channel | null>(null);
 
   const deleteMutation = useMutation({
     mutationFn: (channelId: string) =>
@@ -39,12 +43,20 @@ export default function ChannelsPage() {
         title="Channels"
         description="Kelola channel YouTube untuk auto-clipping. Output: TikTok 9:16 (1080×1920)."
         action={
-          <button
-            onClick={() => setShowAddDialog(true)}
-            className="rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90"
-          >
-            + Tambah Channel
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setShowAddVideoDialog(true)}
+              className="rounded-md border bg-background px-4 py-2 text-sm hover:bg-muted"
+            >
+              + Tambah Video
+            </button>
+            <button
+              onClick={() => setShowAddDialog(true)}
+              className="rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90"
+            >
+              + Tambah Channel
+            </button>
+          </div>
         }
       />
 
@@ -85,6 +97,13 @@ export default function ChannelsPage() {
                 Edit
               </button>
               <button
+                onClick={() => setBackfillChannel(c)}
+                className="rounded px-2 py-1 text-xs border hover:bg-muted"
+                title="Backfill Video Lama"
+              >
+                Backfill
+              </button>
+              <button
                 onClick={() => handleDelete(c)}
                 disabled={deleteMutation.isPending}
                 className="rounded px-2 py-1 text-xs border text-red-600 hover:bg-red-50 disabled:opacity-50"
@@ -114,6 +133,19 @@ export default function ChannelsPage() {
       <AddChannelDialog
         open={showAddDialog}
         onClose={() => setShowAddDialog(false)}
+      />
+
+      {/* Add Video Dialog */}
+      <AddVideoDialog
+        open={showAddVideoDialog}
+        onClose={() => setShowAddVideoDialog(false)}
+      />
+
+      {/* Backfill Dialog */}
+      <BackfillDialog
+        channel={backfillChannel}
+        open={!!backfillChannel}
+        onClose={() => setBackfillChannel(null)}
       />
 
       {/* Edit Channel Dialog */}

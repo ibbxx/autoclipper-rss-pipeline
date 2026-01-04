@@ -10,7 +10,7 @@ class ChannelBase(BaseModel):
     max_clip_sec: int = Field(default=45, ge=6, le=180)
 
 class ChannelCreate(ChannelBase):
-    pass
+    process_latest: bool = False  # Proses 1 video terbaru saat add channel
 
 class ChannelUpdate(BaseModel):
     name: str | None = None

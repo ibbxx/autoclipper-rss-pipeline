@@ -9,4 +9,5 @@ export const endpoints = {
   approveVideoClips: (videoId: string) => `/api/videos/${videoId}/approve`,
   posts: "/api/posts",
   post: (id: string) => `/api/posts/${id}`,
+  backfillChannel: (id: string, count: number) => `/api/channels/${id}/backfill?count=${count}`,
 };
