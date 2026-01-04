@@ -15,4 +15,10 @@ class Channel(Base):
     min_clip_sec: Mapped[int] = mapped_column(Integer, default=20)
     max_clip_sec: Mapped[int] = mapped_column(Integer, default=45)
 
+    # Forward-only baseline tracking
+    baseline_set: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_seen_video_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    last_seen_published_at: Mapped[str | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
+

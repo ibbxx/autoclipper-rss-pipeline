@@ -24,6 +24,11 @@ def list_channels(db: Session = Depends(get_db)):
 
 @router.post("", response_model=ChannelOut)
 def create_channel(body: ChannelCreate, db: Session = Depends(get_db)):
+    from app.services.youtube import parse_feed
+    from app.models import Video
+    from app.workers.queue import queue
+    from app.workers.jobs import process_video_job
+    
     if body.min_clip_sec >= body.max_clip_sec:
         raise HTTPException(status_code=400, detail="min_clip_sec must be < max_clip_sec")
 
@@ -33,6 +38,22 @@ def create_channel(body: ChannelCreate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=f"Channel sudah ada dengan nama '{existing.name}'")
 
     feed_url = channel_feed_url(body.youtube_channel_id)
+    
+    # Fetch RSS once to get the most recent video
+    baseline_video_id = None
+    baseline_published_at = None
+    latest_entry = None
+    
+    try:
+        entries = parse_feed(feed_url)
+        if entries:
+            latest_entry = entries[0]
+            baseline_video_id = latest_entry.get("youtube_video_id")
+            baseline_published_at = latest_entry.get("published_at")
+    except Exception as e:
+        pass  # If RSS fails, channel is still created
+    
+    # Create channel
     ch = Channel(
         id=str(uuid4()),
         name=body.name,
@@ -42,10 +63,36 @@ def create_channel(body: ChannelCreate, db: Session = Depends(get_db)):
         clips_per_video=body.clips_per_video,
         min_clip_sec=body.min_clip_sec,
         max_clip_sec=body.max_clip_sec,
+        baseline_set=baseline_video_id is not None,
+        last_seen_video_id=baseline_video_id,
+        last_seen_published_at=baseline_published_at,
     )
     db.add(ch)
     db.commit()
     db.refresh(ch)
+    
+    # === PROCESS 1 LATEST VIDEO ===
+    # Saat Add Channel, langsung proses 1 video terbaru
+    if latest_entry and baseline_video_id:
+        # Check if video already exists (idempotency)
+        video_exists = db.query(Video).filter(Video.youtube_video_id == baseline_video_id).first()
+        
+        if not video_exists:
+            v = Video(
+                id=str(uuid4()),
+                channel_id=ch.id,
+                youtube_video_id=baseline_video_id,
+                title=latest_entry.get("title", "Unknown"),
+                published_at=baseline_published_at,
+                status="NEW",
+                progress=0,
+            )
+            db.add(v)
+            db.commit()
+            
+            # Enqueue processing
+            queue.enqueue(process_video_job, v.id, job_timeout=3600)
+    
     return ch
 
 @router.patch("/{channel_id}", response_model=ChannelOut)
@@ -107,3 +154,94 @@ def delete_channel(channel_id: str, db: Session = Depends(get_db)):
     db.commit()
     return {"ok": True, "deleted_videos": len(video_ids)}
 
+
+@router.post("/{channel_id}/backfill")
+def backfill_channel(
+    channel_id: str,
+    count: int = 3,
+    db: Session = Depends(get_db)
+):
+    """
+    Explicitly backfill last N videos for a channel.
+    
+    This is a MANUAL action - forward-only baseline is NOT affected.
+    Only videos not already in DB will be processed.
+    
+    Args:
+        channel_id: Channel UUID
+        count: Number of recent videos to backfill (default 3, max 10)
+    """
+    from uuid import uuid4
+    from datetime import datetime, timezone
+    from app.models import Video
+    from app.services.youtube import parse_feed
+    from app.workers.queue import queue
+    from app.workers.jobs import process_video_job
+    
+    # Safety limit
+    MAX_BACKFILL = 10
+    count = min(count, MAX_BACKFILL)
+    
+    if count < 1:
+        raise HTTPException(status_code=400, detail="count must be at least 1")
+    
+    ch = db.query(Channel).filter(Channel.id == channel_id).first()
+    if not ch:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    
+    # Optional: Rate limit backfill
+    # Uncomment to prevent frequent backfill abuse
+    # if ch.last_backfill_at:
+    #     cooldown = datetime.now(timezone.utc) - ch.last_backfill_at
+    #     if cooldown.total_seconds() < 3600:  # 1 hour cooldown
+    #         raise HTTPException(status_code=429, detail="Backfill cooldown: wait 1 hour")
+    
+    # Fetch RSS
+    try:
+        entries = parse_feed(ch.youtube_feed_url)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch RSS: {e}")
+    
+    if not entries:
+        return {"ok": True, "message": "No videos in RSS feed", "processed": 0}
+    
+    # Take top N entries
+    entries_to_process = entries[:count]
+    processed = 0
+    skipped = 0
+    
+    for entry in entries_to_process:
+        yt_id = entry.get("youtube_video_id")
+        if not yt_id:
+            continue
+        
+        # Idempotency: skip if already in DB
+        exists = db.query(Video).filter(Video.youtube_video_id == yt_id).first()
+        if exists:
+            skipped += 1
+            continue
+        
+        # Insert new video
+        v = Video(
+            id=str(uuid4()),
+            channel_id=ch.id,
+            youtube_video_id=yt_id,
+            title=entry["title"],
+            published_at=entry["published_at"],
+            status="NEW",
+            progress=0,
+        )
+        db.add(v)
+        db.commit()
+        
+        # Enqueue processing
+        queue.enqueue(process_video_job, v.id, job_timeout=3600)
+        processed += 1
+    
+    return {
+        "ok": True,
+        "message": f"Backfill completed",
+        "processed": processed,
+        "skipped": skipped,
+        "requested": count
+    }
