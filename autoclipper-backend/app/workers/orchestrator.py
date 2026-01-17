@@ -24,8 +24,14 @@ from app.workers.pipeline_v2 import (
 logger = logging.getLogger(__name__)
 
 
-def update_video_status(video_id: str, status: VideoStatus, error_message: Optional[str] = None):
-    """Update video status in database."""
+
+def update_video_status(
+    video_id: str, 
+    status: VideoStatus, 
+    error_message: Optional[str] = None,
+    progress: Optional[int] = None
+):
+    """Update video status and progress in database."""
     db = SessionLocal()
     try:
         video = db.query(Video).filter(Video.id == video_id).first()
@@ -33,10 +39,13 @@ def update_video_status(video_id: str, status: VideoStatus, error_message: Optio
             video.status = status.value
             if error_message:
                 video.error_message = error_message
+            if progress is not None:
+                video.progress = progress
             db.commit()
-            logger.info(f"[orchestrator] Video {video_id} -> {status.value}")
+            logger.info(f"[orchestrator] Video {video_id} -> {status.value} ({progress}%)")
     finally:
         db.close()
+
 
 
 def save_video_metadata(video_id: str, duration_sec: float, chapters_json: list, strategy: str):
@@ -83,7 +92,7 @@ def start_pipeline_v2(video_id: str, youtube_video_id: str):
     Called by scheduler when new video is detected.
     """
     logger.info(f"[orchestrator] Starting pipeline V2 for video: {video_id}")
-    update_video_status(video_id, VideoStatus.PROBING)
+    update_video_status(video_id, VideoStatus.PROBING, progress=5)
     enqueue_io(orchestrated_probe_metadata, video_id, youtube_video_id)
 
 
@@ -101,7 +110,7 @@ def orchestrated_probe_metadata(video_id: str, youtube_video_id: str):
         )
         
         # Transition state
-        update_video_status(video_id, VideoStatus.GENERATING_CANDIDATES)
+        update_video_status(video_id, VideoStatus.GENERATING_CANDIDATES, progress=15)
         
         # Enqueue next step
         enqueue_io(
@@ -157,7 +166,7 @@ def orchestrated_generate_candidates(
         save_candidates_to_db(video_id, candidates)
         
         # Transition state
-        update_video_status(video_id, VideoStatus.TRANSCRIBING_PASS1)
+        update_video_status(video_id, VideoStatus.TRANSCRIBING_PASS1, progress=25)
         
         # Enqueue next step
         enqueue_ai(
@@ -194,7 +203,7 @@ def orchestrated_transcribe_pass1(
             db.close()
         
         # Transition state
-        update_video_status(video_id, VideoStatus.LLM_SHORTLISTING)
+        update_video_status(video_id, VideoStatus.LLM_SHORTLISTING, progress=40)
         
         # Enqueue next step
         enqueue_ai(
@@ -223,11 +232,14 @@ def orchestrated_llm_shortlist(
         db = SessionLocal()
         try:
             for clip_data in shortlisted:
+                # CAST TO FLOAT
+                start_sec = float(clip_data["start_sec"])
+                
                 # Find or create clip
                 clip = db.query(Clip).filter(
                     Clip.video_id == video_id,
-                    Clip.start_sec >= clip_data["start_sec"] - 2,
-                    Clip.start_sec <= clip_data["start_sec"] + 2
+                    Clip.start_sec >= start_sec - 2,
+                    Clip.start_sec <= start_sec + 2
                 ).first()
                 
                 if clip:
@@ -244,7 +256,7 @@ def orchestrated_llm_shortlist(
             db.close()
         
         # Transition state
-        update_video_status(video_id, VideoStatus.TRANSCRIBING_PASS2)
+        update_video_status(video_id, VideoStatus.TRANSCRIBING_PASS2, progress=60)
         
         # Enqueue next step
         enqueue_ai(
@@ -273,10 +285,13 @@ def orchestrated_transcribe_pass2(
         db = SessionLocal()
         try:
             for clip_data in transcribed:
+                # CAST TO FLOAT
+                start_sec = float(clip_data["start_sec"])
+                
                 clip = db.query(Clip).filter(
                     Clip.video_id == video_id,
-                    Clip.start_sec >= clip_data["start_sec"] - 2,
-                    Clip.start_sec <= clip_data["start_sec"] + 2
+                    Clip.start_sec >= start_sec - 2,
+                    Clip.start_sec <= start_sec + 2
                 ).first()
                 
                 if clip:
@@ -287,7 +302,7 @@ def orchestrated_transcribe_pass2(
             db.close()
         
         # Transition state
-        update_video_status(video_id, VideoStatus.LLM_REFINING)
+        update_video_status(video_id, VideoStatus.LLM_REFINING, progress=80)
         
         # Enqueue next step
         enqueue_ai(orchestrated_llm_refine, video_id, youtube_video_id, transcribed)
@@ -301,23 +316,38 @@ def orchestrated_transcribe_pass2(
 def orchestrated_llm_refine(video_id: str, youtube_video_id: str, clips: list):
     """Step 6: LLM refine, then render clips and mark READY."""
     try:
+        # NEW: Validate openings first (Quality Gate)
+        from app.workers.pipeline_v2 import validate_opening_job
+        clips = validate_opening_job(clips)
+        
         refined = llm_refine_job(clips)
+        
+        # NEW: Final Quality Control (Phase 3)
+        from app.workers.pipeline_v2 import final_quality_control_job
+        qc_passed = final_quality_control_job(refined)
+        
+        # NEW: Final Packaging (Phase 4)
+        from app.workers.pipeline_v2 import final_packaging_job
+        packaged = final_packaging_job(qc_passed)
         
         # Import render job
         from app.workers.pipeline_v2 import render_clips_job
         
-        # Render the clips
-        logger.info(f"[orchestrator] Starting render for {len(refined)} clips")
-        rendered = render_clips_job(video_id, youtube_video_id, refined)
+        # Render the clips (only QC-passed & packaged)
+        logger.info(f"[orchestrator] Starting render for {len(packaged)} clips")
+        rendered = render_clips_job(video_id, youtube_video_id, packaged)
         
         # Update clips with refined data AND file URLs
         db = SessionLocal()
         try:
             for clip_data in rendered:
+                # CAST TO FLOAT to avoid numpy errors in SQL
+                start_sec = float(clip_data["start_sec"])
+                
                 clip = db.query(Clip).filter(
                     Clip.video_id == video_id,
-                    Clip.start_sec >= clip_data["start_sec"] - 2,
-                    Clip.start_sec <= clip_data["start_sec"] + 2
+                    Clip.start_sec >= start_sec - 2,
+                    Clip.start_sec <= start_sec + 2
                 ).first()
                 
                 if clip:
@@ -333,7 +363,7 @@ def orchestrated_llm_refine(video_id: str, youtube_video_id: str, clips: list):
             db.close()
         
         # Transition to READY
-        update_video_status(video_id, VideoStatus.READY)
+        update_video_status(video_id, VideoStatus.READY, progress=100)
         
         logger.info(f"[orchestrator] Pipeline V2 completed for video: {video_id}")
         

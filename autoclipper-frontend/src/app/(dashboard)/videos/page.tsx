@@ -15,11 +15,15 @@ function badge(status: Video["status"]) {
   }
 }
 
+import { Progress } from "@/components/ui/progress";
+
+// ...
+
 export default function VideosPage() {
   const { data, isLoading, error } = useQuery({
     queryKey: ["videos"],
     queryFn: () => apiFetch<Video[]>(endpoints.videos),
-    refetchInterval: 30000,
+    refetchInterval: 3000, // Poll every 3 seconds for progress
   });
 
   return (
@@ -36,24 +40,46 @@ export default function VideosPage() {
 
       <div className="rounded-lg border">
         <div className="grid grid-cols-6 gap-2 border-b p-3 text-xs font-medium text-muted-foreground">
-          <div className="col-span-3">Title</div>
+          <div className="col-span-2">Title</div>
           <div>Published</div>
-          <div>Status</div>
+          <div className="col-span-2">Status</div>
           <div>Action</div>
         </div>
 
-        {(data || []).map((v) => (
-          <div key={v.id} className="grid grid-cols-6 gap-2 p-3 text-sm">
-            <div className="col-span-3 font-medium">{v.title}</div>
-            <div className="text-xs">{new Date(v.published_at).toLocaleString()}</div>
-            <div><span className={badge(v.status)}>{v.status}</span></div>
-            <div>
-              <Link className="text-sm underline" href={`/videos/${v.id}`}>
-                Open
-              </Link>
+        {(data || []).map((v) => {
+          const showProgress = v.status !== "READY" && v.status !== "ERROR";
+          return (
+            <div key={v.id} className="grid grid-cols-6 gap-2 p-3 text-sm items-center hover:bg-muted/50 transition-colors">
+              <div className="col-span-2 font-medium truncate" title={v.title}>{v.title}</div>
+              <div className="text-xs text-muted-foreground">{new Date(v.published_at).toLocaleString()}</div>
+
+              <div className="col-span-2 flex flex-col gap-1.5 pr-4">
+                <div className="flex items-center gap-2">
+                  <span className={badge(v.status)}>{v.status}</span>
+                  {showProgress && (
+                    <span className="text-xs text-muted-foreground font-mono">
+                      {v.progress}%
+                    </span>
+                  )}
+                </div>
+                {showProgress && (
+                  <Progress value={v.progress || 0} className="h-1.5" />
+                )}
+                {v.status === "ERROR" && v.error_message && (
+                  <div className="text-xs text-red-500 truncate" title={v.error_message}>
+                    {v.error_message}
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <Link className="text-sm underline decoration-primary/50 hover:decoration-primary" href={`/videos/${v.id}`}>
+                  Open
+                </Link>
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
 
         {!isLoading && (data?.length ?? 0) === 0 && (
           <div className="p-4 text-sm text-muted-foreground">
@@ -64,3 +90,4 @@ export default function VideosPage() {
     </div>
   );
 }
+

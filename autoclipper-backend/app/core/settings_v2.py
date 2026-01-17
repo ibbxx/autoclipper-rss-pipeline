@@ -24,12 +24,12 @@ class RefactorSettings:
     whisper_pass1_beam: int = _env_int("WHISPER_PASS1_BEAM", 1)
     
     # Whisper Pass 2 (accurate)
-    whisper_pass2_model: str = _env_str("WHISPER_PASS2_MODEL", "base")
+    whisper_pass2_model: str = _env_str("WHISPER_PASS2_MODEL", "small")
     whisper_pass2_beam: int = _env_int("WHISPER_PASS2_BEAM", 3)
     
     # Candidate generation
-    cand_min_sec: int = _env_int("CAND_MIN_SEC", 30)
-    cand_max_sec: int = _env_int("CAND_MAX_SEC", 75)
+    cand_min_sec: int = _env_int("CAND_MIN_SEC", 60)
+    cand_max_sec: int = _env_int("CAND_MAX_SEC", 120)
     cand_shift_sec: int = _env_int("CAND_SHIFT_SEC", 15)
     cand_max_per_video: int = _env_int("CAND_MAX_PER_VIDEO", 400)
     

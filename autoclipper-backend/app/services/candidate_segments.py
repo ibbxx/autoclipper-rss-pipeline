@@ -48,6 +48,8 @@ def candidates_from_chapters(
     max_len = max_dur or settings.cand_max_sec
     shift = settings.cand_shift_sec
     limit = max_items or settings.cand_max_per_video
+    
+    logger.info(f"[candidates_from_chapters] Effective params: min_len={min_len}, max_len={max_len}, limit={limit}")
 
     out: List[Candidate] = []
     
@@ -183,6 +185,8 @@ def candidates_from_silence(
     min_len = min_dur or settings.cand_min_sec
     max_len = max_dur or settings.cand_max_sec
     shift = settings.cand_shift_sec
+    
+    logger.info(f"[candidates_from_silence] Effective params: min_len={min_len}, max_len={max_len}, limit={limit}")
 
     out: List[Candidate] = []
     

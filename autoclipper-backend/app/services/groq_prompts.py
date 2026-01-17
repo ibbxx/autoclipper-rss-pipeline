@@ -31,7 +31,7 @@ STRICT RULES:
   • Vague references ("itu", "yang tadi", "that", "it") without clarity
 
 CLIP CONSTRAINTS:
-- Duration: 30–75 seconds
+- Duration: 75–180 seconds
 - Clip must feel complete and impactful
 - Mixed Indonesian/English is allowed and encouraged if natural"""
 
@@ -160,3 +160,196 @@ def format_refine_prompt(clips: list) -> tuple[str, str]:
     user = REFINE_USER_TEMPLATE.format(clips_json=clips_json)
     
     return REFINE_SYSTEM, user
+
+
+# =============================================================================
+# VALIDATE OPENING PROMPT (Quality Gate)
+# Evaluate if first 10 seconds are strong enough
+# =============================================================================
+
+VALIDATE_OPENING_SYSTEM = """You are a senior content editor evaluating the OPENING of a long-form short video (60–120 seconds).
+
+Your task is to decide whether the FIRST 10 SECONDS are strong enough to keep viewers watching.
+
+IMPORTANT:
+- This is NOT a short 7–15s clip.
+- Viewers are willing to watch if the opening gives a clear reason to continue.
+
+Evaluate based on these criteria:
+1. Does the opening immediately introduce a clear topic, problem, or promise?
+2. Is the opening free from filler words (e.g. "eee", "jadi", "oke", "nah", "so")?
+3. Would a neutral viewer understand why this is worth watching further?
+
+Respond in STRICT JSON only:
+{
+  "pass": true | false,
+  "opening_type": "claim" | "problem" | "question" | "story" | "weak",
+  "reason": "short explanation",
+  "confidence_score": 0-100
+}
+
+If the opening is vague, slow, or filler-heavy, set pass=false.
+Do NOT suggest edits. Only judge."""
+
+VALIDATE_OPENING_USER_TEMPLATE = """Evaluate the opening of this clip.
+
+CLIP DURATION: {duration_sec:.1f} seconds
+
+FIRST 10 SECONDS TRANSCRIPT:
+\"\"\"{opening_text}\"\"\"
+
+Respond in JSON only."""
+
+
+def format_validate_opening_prompt(opening_text: str, duration_sec: float) -> tuple[str, str]:
+    """
+    Format the validate opening prompt.
+    
+    Args:
+        opening_text: Transcript of first 10 seconds
+        duration_sec: Total clip duration
+        
+    Returns:
+        Tuple of (system_prompt, user_prompt)
+    """
+    user = VALIDATE_OPENING_USER_TEMPLATE.format(
+        duration_sec=duration_sec,
+        opening_text=opening_text[:500]  # Limit text
+    )
+    return VALIDATE_OPENING_SYSTEM, user
+
+
+# =============================================================================
+# FINAL QUALITY CONTROL PROMPT (Phase 3)
+# Evaluate opening + ending, propose auto-recut
+# =============================================================================
+
+FQC_SYSTEM = """You are a senior video editor performing FINAL QUALITY CONTROL
+for a long-form short clip (60–120 seconds) intended for TikTok / Reels.
+
+QUALITY RULES:
+1) Opening (0–10s): Must have clear topic/promise. No fillers (eee, jadi, oke, nah, so).
+2) Cut Cleanliness: Must NOT start/end mid-sentence.
+3) Ending: Final thought must feel complete.
+4) Duration: Keep within 60–120s. Minimal changes only.
+5) Recut: Only propose ≤3.0s shifts. If unfixable, recommend DROP.
+
+OUTPUT FORMAT (STRICT JSON):
+{
+  "pass": true | false,
+  "issues": ["starts_with_filler", "ends_mid_sentence", "hook_too_slow", "ending_not_complete", "needs_context"],
+  "recut_plan": {
+    "action": "none" | "shift_start" | "shift_end" | "shift_both" | "drop",
+    "shift_start_by_sec": -3.0 to +3.0,
+    "shift_end_by_sec": -3.0 to +3.0,
+    "notes": "short explanation"
+  },
+  "confidence_score": 0-100
+}
+
+RULES:
+- Positive shift_start = move start LATER (trim filler opening)
+- Positive shift_end = EXTEND ending (add more time)
+- Negative shift_end = trim ending earlier
+- If pass=true, action MUST be "none"
+- If unfixable with small shifts, use action="drop"
+- Do NOT suggest content changes. Only timing shifts."""
+
+FQC_USER_TEMPLATE = """CLIP METADATA:
+clip_id: {clip_id}
+duration_sec: {duration_sec:.1f}
+
+FIRST 10 SECONDS TRANSCRIPT:
+\"\"\"{opening_text}\"\"\"
+
+LAST 12 SECONDS TRANSCRIPT:
+\"\"\"{ending_text}\"\"\"
+
+Respond in JSON only."""
+
+
+def format_fqc_prompt(clip_id: str, duration_sec: float, 
+                      opening_text: str, ending_text: str) -> tuple[str, str]:
+    """
+    Format the Final Quality Control prompt.
+    
+    Args:
+        clip_id: Clip identifier
+        duration_sec: Total clip duration
+        opening_text: Transcript of first 10 seconds
+        ending_text: Transcript of last 12 seconds
+        
+    Returns:
+        Tuple of (system_prompt, user_prompt)
+    """
+    user = FQC_USER_TEMPLATE.format(
+        clip_id=clip_id[:8] if clip_id else "unknown",
+        duration_sec=duration_sec,
+        opening_text=opening_text[:400],
+        ending_text=ending_text[:400]
+    )
+    return FQC_SYSTEM, user
+
+
+# =============================================================================
+# FINAL PACKAGING PROMPT (Phase 4)
+# Generate honest title, caption, hashtags
+# =============================================================================
+
+PACKAGING_SYSTEM = """Kamu adalah editor media sosial senior yang menyiapkan paket upload FINAL dan JUJUR untuk video pendek (60–120 detik).
+
+KONTEKS PENTING:
+- Video sudah melewati editing, trimming, dan validasi kualitas.
+- Ini BUKAN konten clickbait.
+- Tugasmu: menyiapkan teks yang 100% sesuai dengan isi video.
+
+TUGAS:
+1) Identifikasi SATU kalimat kunci dari transkrip yang paling mewakili inti video.
+   - Kalimat HARUS ada di transkrip (verbatim atau hampir sama).
+   - JANGAN mengarang klaim baru.
+
+2) Berdasarkan kalimat kunci tersebut, buat:
+   a) JUDUL pendek dan jujur (maks 8 kata)
+   b) CAPTION ringkas (maks 200 karakter)
+   c) HASHTAGS:
+      - 2 hashtag generik
+      - 3-4 hashtag spesifik topik
+      - Tidak ada tag menyesatkan
+
+3) Judul dan caption HARUS:
+   - Sesuai dengan isi video
+   - Tidak menjanjikan hasil yang tidak ada di video
+   - Cocok untuk TikTok / Reels / Shorts
+
+OUTPUT FORMAT (STRICT JSON):
+{
+  "key_sentence": "...",
+  "title": "...",
+  "caption": "...",
+  "hashtags": ["#...", "#...", "#...", "#...", "#..."],
+  "packaging_confidence": 0-100
+}
+
+ATURAN:
+- JANGAN menambahkan konteks yang tidak ada di transkrip.
+- JANGAN melebih-lebihkan atau sensasionalisasi.
+- Jika transkrip tidak jelas, turunkan confidence score.
+- JANGAN jelaskan apapun di luar JSON."""
+
+PACKAGING_USER_TEMPLATE = """CLIP ID: {clip_id}
+DURASI: {duration_sec:.1f} detik
+
+TRANSKRIP FINAL:
+\"\"\"{transcript}\"\"\"
+
+Respond in JSON only."""
+
+
+def format_packaging_prompt(clip_id: str, duration_sec: float, 
+                            transcript: str) -> tuple[str, str]:
+    user = PACKAGING_USER_TEMPLATE.format(
+        clip_id=clip_id[:8] if clip_id else "unknown",
+        duration_sec=duration_sec,
+        transcript=transcript[:1500]
+    )
+    return PACKAGING_SYSTEM, user

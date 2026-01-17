@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api";
 import { endpoints } from "@/lib/endpoints";
 import { REFETCH_INTERVALS } from "@/lib/constants";
+import { RETRY_CONFIG } from "@/lib/query-config";
 import type { Clip } from "@/lib/types";
 
 export function useClips(videoId: string) {
@@ -11,6 +12,7 @@ export function useClips(videoId: string) {
         queryKey: ["clips", videoId],
         queryFn: () => apiFetch<Clip[]>(endpoints.clipsByVideo(videoId)),
         refetchInterval: REFETCH_INTERVALS.CLIPS,
+        ...RETRY_CONFIG,
     });
 }
 

@@ -79,6 +79,9 @@ def generate_candidates_job(
     logger.info(f"[generate_candidates] Starting for video: {video_id} (min={min_dur}, max={max_dur}, limit={max_items})")
     logger.info(f"[generate_candidates] Chapters payload: {type(chapters)} len={len(chapters) if chapters else 0}")
     
+    # DEBUG: Explicitly log if params are None or values
+    logger.info(f"DEBUG_PARAMS: min_dur={min_dur}, max_dur={max_dur}, max_items={max_items}")
+    
     audio_path = None
     
     # If no chapters, we need audio for silence detection
@@ -127,11 +130,14 @@ def transcribe_pass1_job(
     Queue: ai
     """
     import whisper
+    import torch
     
     logger.info(f"[transcribe_pass1] Starting for {len(candidates)} candidates")
     
     # Load fast model
-    model = whisper.load_model(settings.whisper_pass1_model, device="cpu")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    logger.info(f"[transcribe_pass1] Loading Whisper {settings.whisper_pass1_model} model on {device}...")
+    model = whisper.load_model(settings.whisper_pass1_model, device=device)
     
     # Download full video for transcription
     from app.services.downloader import Downloader
@@ -276,11 +282,14 @@ def transcribe_pass2_job(
     Queue: ai
     """
     import whisper
+    import torch
     
     logger.info(f"[transcribe_pass2] Starting for {len(clips)} clips")
     
-    # Load better model
-    model = whisper.load_model(settings.whisper_pass2_model, device="cpu")
+    # Load fast model
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    logger.info(f"[transcribe_pass2] Loading Whisper {settings.whisper_pass2_model} model on {device}...")
+    model = whisper.load_model(settings.whisper_pass2_model, device=device)
     
     # Download video
     from app.services.downloader import Downloader
@@ -292,7 +301,7 @@ def transcribe_pass2_job(
     # Transcribe full video with word timing
     result = model.transcribe(
         video_path,
-        language=None,
+        language="id",
         beam_size=settings.whisper_pass2_beam,
         fp16=False,
         word_timestamps=True
@@ -381,8 +390,334 @@ def llm_refine_job(clips: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 # =============================================================================
+# Job 6.5: Validate Opening (Quality Gate)
+# =============================================================================
+
+def validate_opening_job(clips: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Validate clip openings using LLM.
+    Marks clips with weak openings for potential re-cutting or flagging.
+    
+    Queue: ai
+    """
+    from groq import Groq
+    from app.core.settings import settings as main_settings
+    from app.services.groq_prompts import format_validate_opening_prompt
+    
+    logger.info(f"[validate_opening] Starting for {len(clips)} clips")
+    
+    client = Groq(api_key=main_settings.groq_api_key)
+    
+    for clip in clips:
+        # Extract first 10 seconds of transcript from word timing
+        words = clip.get("word_timing", [])
+        opening_words = [w["word"] for w in words if w["end"] <= 10.0]
+        
+        # Fallback to transcript if no word timing
+        if opening_words:
+            opening_text = " ".join(opening_words)
+        else:
+            full_transcript = clip.get("transcript_pass2", "")
+            # Estimate ~2.5 words per second -> 25 words for 10s
+            opening_text = " ".join(full_transcript.split()[:25])
+        
+        duration = clip["end_sec"] - clip["start_sec"]
+        
+        # Skip validation for very short clips (< 30s)
+        if duration < 30:
+            clip["opening_validation"] = {"pass": True, "reason": "clip_too_short_to_validate"}
+            continue
+        
+        # Format prompt
+        system, user = format_validate_opening_prompt(opening_text, duration)
+        
+        try:
+            completion = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user}
+                ],
+                temperature=0.1,
+                response_format={"type": "json_object"}
+            )
+            
+            result = json.loads(completion.choices[0].message.content)
+            
+            clip["opening_validation"] = {
+                "pass": result.get("pass", True),
+                "opening_type": result.get("opening_type", "unknown"),
+                "reason": result.get("reason", ""),
+                "confidence_score": result.get("confidence_score", 50)
+            }
+            
+            if not result.get("pass", True):
+                logger.warning(f"[validate_opening] WEAK opening: {clip.get('id', 'unknown')[:8]} - {result.get('reason', 'no reason')}")
+                # Add risk flag
+                existing_flags = clip.get("risk_flags", [])
+                if "weak_opening" not in existing_flags:
+                    clip["risk_flags"] = existing_flags + ["weak_opening"]
+            else:
+                logger.info(f"[validate_opening] PASS: {clip.get('id', 'unknown')[:8]} - {result.get('opening_type', 'unknown')}")
+                
+        except Exception as e:
+            logger.error(f"[validate_opening] Failed for clip {clip.get('id', 'unknown')}: {e}")
+            clip["opening_validation"] = {"pass": True, "reason": "validation_failed"}
+    
+    # Summary
+    passed = sum(1 for c in clips if c.get("opening_validation", {}).get("pass", True))
+    logger.info(f"[validate_opening] Completed: {passed}/{len(clips)} passed")
+    return clips
+
+
+# =============================================================================
+# Job 6.6: Final Quality Control (Phase 3)
+# =============================================================================
+
+def _apply_recut(clip: Dict[str, Any], plan: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply recut plan by shifting start/end times."""
+    shift_start = plan.get("shift_start_by_sec", 0.0)
+    shift_end = plan.get("shift_end_by_sec", 0.0)
+    
+    # Ensure numeric values
+    try:
+        shift_start = float(shift_start) if shift_start else 0.0
+        shift_end = float(shift_end) if shift_end else 0.0
+    except (TypeError, ValueError):
+        shift_start = 0.0
+        shift_end = 0.0
+    
+    # Track offset for subtitle correction
+    timing_offset = shift_start
+    
+    # Clamp shifts to ±3.0 seconds
+    shift_start = max(-3.0, min(3.0, shift_start))
+    shift_end = max(-3.0, min(3.0, shift_end))
+    
+    orig_start = clip["start_sec"]
+    orig_end = clip["end_sec"]
+    
+    new_start = orig_start + shift_start
+    new_end = orig_end + shift_end
+    
+    # Safety: Ensure valid duration (min 30s) and non-negative start
+    if (new_end - new_start) >= 30.0 and new_start >= 0:
+        logger.info(f"[Recut] {clip.get('id', 'unknown')[:8]}: {orig_start:.1f}->{new_start:.1f}, {orig_end:.1f}->{new_end:.1f}")
+        clip["start_sec"] = new_start
+        clip["end_sec"] = new_end
+        clip["was_recut"] = True
+        
+        # Accumulate offset (important for subtitles)
+        current_offset = clip.get("timing_offset", 0.0)
+        clip["timing_offset"] = current_offset + timing_offset
+    else:
+        logger.warning(f"[Recut] Skipped (invalid result): {new_start:.1f}-{new_end:.1f}")
+    
+    return clip
+
+
+def final_quality_control_job(clips: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Final QC: Evaluate opening + ending, apply auto-recut if needed.
+    Drops clips that are fundamentally unfixable.
+    
+    Queue: ai
+    """
+    from groq import Groq
+    from app.core.settings import settings as main_settings
+    from app.services.groq_prompts import format_fqc_prompt
+    
+    logger.info(f"[FQC] Starting for {len(clips)} clips")
+    client = Groq(api_key=main_settings.groq_api_key)
+    
+    passed_clips = []
+    
+    for clip in clips:
+        words = clip.get("word_timing", [])
+        duration = clip["end_sec"] - clip["start_sec"]
+        
+        # Extract opening (0-10s) and ending (last 12s) from word timing
+        opening_words = [w["word"] for w in words if w["end"] <= 10.0]
+        ending_start = max(0, duration - 12.0)
+        ending_words = [w["word"] for w in words if w["start"] >= ending_start]
+        
+        # Fallback to transcript if no word timing
+        opening_text = " ".join(opening_words) if opening_words else clip.get("transcript_pass2", "")[:150]
+        ending_text = " ".join(ending_words) if ending_words else clip.get("transcript_pass2", "")[-150:]
+        
+        # Skip very short clips (< 30s)
+        if duration < 30:
+            clip["fqc_result"] = {"pass": True, "reason": "clip_too_short"}
+            passed_clips.append(clip)
+            continue
+        
+        system, user = format_fqc_prompt(
+            clip.get("id", "unknown"),
+            duration,
+            opening_text,
+            ending_text
+        )
+        
+        try:
+            completion = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user}
+                ],
+                temperature=0.1,
+                response_format={"type": "json_object"}
+            )
+            
+            result = json.loads(completion.choices[0].message.content)
+            clip["fqc_result"] = result
+            
+            # Apply recut plan
+            recut_plan = result.get("recut_plan", {})
+            action = recut_plan.get("action", "none")
+            
+            if action == "drop":
+                logger.warning(f"[FQC] DROPPED: {clip.get('id', 'unknown')[:8]} - {recut_plan.get('notes', 'unfixable')}")
+                continue  # Skip this clip entirely
+                
+            elif action in ["shift_start", "shift_end", "shift_both"]:
+                clip = _apply_recut(clip, recut_plan)
+                clip["fqc_recut"] = True
+                logger.info(f"[FQC] RECUT applied: {action}")
+            else:
+                logger.info(f"[FQC] PASS: No recut needed")
+                
+            passed_clips.append(clip)
+            
+        except Exception as e:
+            logger.error(f"[FQC] Failed: {e}")
+            passed_clips.append(clip) # Fallback: keep original
+            
+    logger.info(f"[FQC] Completed. {len(clips)} -> {len(passed_clips)} clips")
+    return passed_clips
+
+
+def final_packaging_job(clips: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Phase 4: Generate honest title, caption, and hashtags based on transcript.
+    """
+    from groq import Groq
+    from app.core.settings import settings as main_settings
+    from app.services.groq_prompts import format_packaging_prompt
+    
+    logger.info(f"[Packaging] Starting for {len(clips)} clips")
+    client = Groq(api_key=main_settings.groq_api_key)
+    
+    for clip in clips:
+        transcript = clip.get("transcript_pass2", "")
+        duration = clip["end_sec"] - clip["start_sec"]
+        
+        if not transcript or len(transcript) < 50:
+            logger.warning(f"[Packaging] Skipped (no transcript): {clip.get('id', 'unknown')[:8]}")
+            continue
+        
+        system, user = format_packaging_prompt(
+            clip.get("id", "unknown"),
+            duration,
+            transcript
+        )
+        
+        try:
+            completion = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user}
+                ],
+                temperature=0.2,
+                response_format={"type": "json_object"}
+            )
+            
+            result = json.loads(completion.choices[0].message.content)
+            
+            # Update clip dengan packaging data
+            clip["key_sentence"] = result.get("key_sentence", "")
+            clip["hook_text"] = result.get("title", clip.get("hook_text", ""))
+            clip["suggested_caption"] = result.get("caption", clip.get("caption", ""))
+            clip["hashtags"] = result.get("hashtags", [])
+            clip["packaging_confidence"] = result.get("packaging_confidence", 50)
+            
+            logger.info(f"[Packaging] OK: {clip.get('id', 'unknown')[:8]} - '{result.get('title', '')[:30]}...'")
+            
+        except Exception as e:
+            logger.error(f"[Packaging] Error: {e}")
+    
+    logger.info(f"[Packaging] Completed")
+    return clips
+
+
+# =============================================================================
 # Job 7: Render Clips
 # =============================================================================
+
+
+def _snap_and_clean(clips: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Adjust start/end times using word timestamps to remove fillers and ensure clean cuts.
+    """
+    # Filler words set (mixture of ID/EN)
+    FILLERS = {
+        "eee", "ee", "hmm", "umm", "uh", "yak", "so", 
+        "nah", "jadi", "okay", "oke", "terus", "berarti", 
+        "actually", "like", "you know", "basically", "literally",
+        "anu", "ngg", "yg", "yang"
+    }
+    
+    cleaned_clips = []
+    for c in clips:
+        # If no word timing data, keep original
+        words = c.get("word_timing", [])
+        if not words:
+            cleaned_clips.append(c)
+            continue
+            
+        orig_start = c["start_sec"]
+        
+        # 1. Snap Start (Remove fillers)
+        # word_timing is relative to orig_start (0.0 = orig_start)
+        snap_start_rel = 0.0
+        
+        # Try to find the first non-filler word
+        for w in words:
+            # Simple cleaning: remove punctuation, lowercase
+            clean_word = "".join(x for x in w["word"].lower() if x.isalpha())
+            
+            # If valid word (not filler, len > 1 or specific short words allowed)
+            if clean_word not in FILLERS and (len(clean_word) > 1 or clean_word in ["i", "a", "di", "ke"]):
+                snap_start_rel = w["start"]
+                break
+            # If filler, we consume it (loop continues)
+        
+        # 2. Snap End
+        # Just snap to the end of the last word in the list to avoid silence tail
+        snap_end_rel = words[-1]["end"]
+        
+        # 3. Apply Adjustment
+        new_start = orig_start + snap_start_rel
+        new_end = orig_start + snap_end_rel
+        
+        # Safety check: Don't make it too short (< 5s) or invalid
+        if (new_end - new_start) >= 5.0:
+            if abs(new_start - orig_start) > 0.1 or abs(new_end - c["end_sec"]) > 0.1:
+                logger.info(f"[Snap] {c.get('id', 'unknown')}: {orig_start:.2f}->{new_start:.2f} (Cleaned start), {c['end_sec']:.2f}->{new_end:.2f} (Cleaned end)")
+                
+            c["start_sec"] = new_start
+            c["end_sec"] = new_end
+            
+            # Update timing offset for subtitles
+            # new_start is > orig_start, so we shifted start RIGHT (positive offset)
+            offset = new_start - orig_start
+            c["timing_offset"] = c.get("timing_offset", 0.0) + offset
+            
+        cleaned_clips.append(c)
+        
+    return cleaned_clips
+
 
 def render_clips_job(
     video_id: str,
@@ -401,6 +736,9 @@ def render_clips_job(
     from app.services.editor import Editor
     
     logger.info(f"[render_clips] Starting for {len(clips)} clips")
+
+    # Apply Precision Trimming (Snap & Clean)
+    clips = _snap_and_clean(clips)
     
     editor = Editor(output_dir="static/clips")
     url = f"https://www.youtube.com/watch?v={youtube_video_id}"
@@ -471,12 +809,34 @@ def render_clips_job(
 
         entry_idx = 1
         for i, w in enumerate(words):
-            start_ts = fmt_time(w["start"])
-            end_ts = fmt_time(w["end"])
+            # Apply offset to align with video that has been shifted/padded
+            # If video start shifted +2s, word must appear +2s later in SRT time
+            reshifted_start = w["start"] - start_sec # start_sec here is actuall the offset 
+            # WAIT: word["start"] is relative to ORIGINAL start.
+            # If we shifted Start by +2s, then the video slice starts 2s LATER.
+            # So a word that was at 5s (relative) is now at 3s (relative) in the new slice?
+            # NO. 
+            # Original: Start=100. Word at 105 (rel=5).
+            # New Start=102 (Shift=+2). Word still at 105.
+            # New rel time = 105 - 102 = 3.
+            # So: new_rel = old_rel - shift.
+            
+            # BUT: start_sec arg passed to this function is used as ADDITIVE offset in previous plan?
+            # Let's stick to the plan: pass cumulative offset as 'start_sec' (bad name, but okay).
+            # If Editor padded -1.5s (Start moved LEFT, e.g. 98.5).
+            # Word at 105. New rel = 105 - 98.5 = 6.5.
+            # So new_rel = old_rel - shift.
+            # shift = -1.5. new_rel = 5 - (-1.5) = 6.5. Correct.
+            
+            # So we need: final_ts = w["start"] - total_shift_of_start_time
+            # Passed arg 'start_sec' will be the total_shift.
+            
+            start_ts = fmt_time(w["start"] - start_sec)
+            end_ts = fmt_time(w["end"] - start_sec)
             
             # Clean text (remove punctuation for clean look if desired, or keep)
             # Keeping punctuation for readability
-            text = w["word"].strip() 
+            text = w["word"].strip().upper() 
             
             # SRT Entry
             # 1 word per line
@@ -497,7 +857,21 @@ def render_clips_job(
             # Generate SRT if word timing exists
             word_timing = clip.get("word_timing")
             if word_timing:
-                srt_content = _generate_srt(word_timing, 0) # timing is relative to clip start
+                # Calculate total shift applied to start_sec
+                # 1. Pipeline recut/snap offsets (stored in timing_offset)
+                # 2. Editor padding (-1.5s)
+                
+                # Total shift = timing_offset + (-1.5)
+                # If timing_offset is +2.0 (start moved forward), and padding is -1.5 (start back)
+                # Total change to start line = +0.5.
+                # SRT timing calculation: new_time = old_time - total_shift
+                
+                pipeline_offset = clip.get("timing_offset", 0.0)
+                editor_padding = -1.5 # Fixed in editor.py
+                
+                total_start_shift = pipeline_offset + editor_padding
+                
+                srt_content = _generate_srt(word_timing, total_start_shift)
                 if srt_content:
                     srt_path = f"/tmp/{clip_id}.srt"
                     with open(srt_path, "w") as f:

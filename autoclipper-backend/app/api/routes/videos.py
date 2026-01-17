@@ -10,7 +10,7 @@ from app.schemas.clip import ClipOut, ClipUpdate
 from app.schemas.actions import ApproveVideoClipsIn
 from app.schemas.post_job import PostJobOut
 from app.workers.queue import queue
-from app.workers.jobs import process_video_job, upload_tiktok_job
+# from app.workers.jobs import process_video_job, upload_tiktok_job
 from uuid import uuid4
 from datetime import datetime, timezone
 
@@ -55,7 +55,19 @@ def create_video(body: VideoCreate, db: Session = Depends(get_db)):
     # Check if video already exists
     existing = db.query(Video).filter(Video.youtube_video_id == yt_id).first()
     if existing:
-        # Return existing video info instead of error
+        # If ERROR, allow retry
+        if existing.status == "ERROR":
+            existing.status = "NEW"
+            existing.progress = 0
+            existing.error_message = None
+            db.commit()
+            
+            # Restart pipeline
+            from app.workers.orchestrator import start_pipeline_v2
+            start_pipeline_v2(existing.id, existing.youtube_video_id)
+            return existing
+            
+        # Return existing video info
         return existing
     
     # Get video info via yt-dlp probe (optional enhancement)
@@ -180,8 +192,9 @@ def approve_and_upload(video_id: str, body: ApproveVideoClipsIn, db: Session = D
 
     db.commit()
 
-    for j in created_jobs:
-        queue.enqueue(upload_tiktok_job, j.id)
+    # for j in created_jobs:
+    #     queue.enqueue(upload_tiktok_job, j.id)
+    # TODO: Re-implement upload_tiktok_job in pipeline v2
 
     return {"ok": True, "jobs_created": len(created_jobs)}
 

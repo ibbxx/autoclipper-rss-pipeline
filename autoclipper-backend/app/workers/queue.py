@@ -10,8 +10,7 @@ from app.core.settings_v2 import refactor_settings
 # Redis connection
 redis_conn = Redis.from_url(settings.redis_url)
 
-# Legacy default queue (backwards compat)
-queue = Queue(settings.rq_queue_name, connection=redis_conn)
+
 
 # =============================================================================
 # Pipeline V2: Separated Queues
@@ -25,6 +24,9 @@ ai_queue = Queue(refactor_settings.rq_queue_ai, connection=redis_conn)
 
 # Render Queue: FFmpeg processing
 render_queue = Queue(refactor_settings.rq_queue_render, connection=redis_conn)
+
+# Legacy alias for backward compatibility
+queue = io_queue
 
 
 # =============================================================================
